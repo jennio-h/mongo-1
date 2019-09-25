@@ -165,6 +165,15 @@ sh._chunkDataSize = function(key, chunk, est = true) {
     return result.size;
 }
 
+sh._chunkNumberOfDoc = function(key, chunk, est){
+    var result = sh.data_size(chunk.ns, key, chunk.min, chunk.max, est);
+    if ( result.ok === 0 ) {
+        printjson(result);
+        return -1;
+    }
+    return result.numObjects;
+}
+
 sh.merge_chunks = function(ns, lowerBound, upperBound) {
     var rc = undefined;
     if ( sh._debugMode === true ) {
@@ -673,7 +682,7 @@ sh.split_to_max = function(ns, startChunk_id) {
     let zeroChunks = 0;
     let fitChunks = 0;
     let splitChunks = 0;
-    let query = ""
+    let query = "";
     if (startChunk_id != null){
         query = {"ns": ns, "_id":{$gte:startChunk_id}};
     }
@@ -690,10 +699,10 @@ sh.split_to_max = function(ns, startChunk_id) {
             const chunk = itr.next();
             //print("Processing:", chunk._id);
 
-            if ( sh._isMinChunk(chunk) || sh._isMaxChunk(chunk)) {
+/*             if ( sh._isMinChunk(chunk) || sh._isMaxChunk(chunk)) {
                 print("Skipping", chunk._id, tojsononeline(chunk.min), tojsononeline(chunk.max));
                 continue;
-            }
+            } */
 
             const dataSize = sh._chunkDataSize(coll.key, chunk);
 
@@ -746,6 +755,98 @@ sh.split_to_max = function(ns, startChunk_id) {
     print("Failed splits:", failedSplits.format());
     print();
 }
+
+
+sh.split_by_doc = function(ns, docLimit, startChunk_id) {
+
+    print("--------------------------------------------------------------------------------");
+    print("Split", ns, "chunks until they are below", docLimit, "documents");
+    print("--------------------------------------------------------------------------------");
+
+    const coll = sh._configDB.collections.findOne({_id: ns});
+
+    if (!coll) {
+		print("sh.split_by_doc: namespace", ns, "not found!");
+		return;
+    }
+
+    // Process chunks
+    let chunksProcessed = 0;
+    let failedSplits = 0;
+    let failedDocNum = 0;
+    let zeroChunks = 0;
+    let fitChunks = 0;
+    let splitChunks = 0;
+    let query = "";
+    if (startChunk_id != null){
+        query = {"ns": ns, "_id":{$gte:startChunk_id}};
+        print("Starting from chunk_id: ",startChunk_id);
+    }
+    else {
+        query = {"ns": ns};
+    }
+    let itr = sh._configDB.chunks.find(query).sort({_id:1});
+
+     while (itr.hasNext()) {
+        //print("Starting with", tojsononeline(query));
+
+        while (itr.hasNext()) {
+            chunksProcessed++;
+            const chunk = itr.next();
+            //print("Processing:", chunk._id);
+
+            const numOfDoc = sh._chunkNumberOfDoc(coll.key, chunk, true);
+
+            if ( numOfDoc < 0 ) {
+                print("Skipping", chunk._id, "due to an invalid number of documents in chunk.");
+                failedDocNum++;
+                continue;
+            }
+
+            if ( numOfDoc === 0 ) {
+                //print("Skipping", chunk._id, "due to ZERO size");
+                zeroChunks++;
+                continue;
+            }
+
+            if ( numOfDoc < docLimit ) {
+                //print("Skipping", chunk._id, "due to FIT size");
+                fitChunks++;
+                continue;
+            }
+
+            const splitResult = sh._splitChunk(chunk);
+            if (splitResult.ok === 0) {
+                print("Skipping", chunk._id, ":", tojsononeline(splitResult));
+                failedSplits++;
+                continue;
+            }
+
+            splitChunks++;
+            print("Split", chunk._id, "number of documents", numOfDoc);
+
+            // We need to restart the query from this point
+            // such that we process both of these chunks again (current
+            // and newly born)
+            itr.close();
+            query = {_id: { $gte: chunk._id}, "ns": ns };
+            itr = sh._configDB.chunks.find(query).sort({_id:1});
+            break;
+        }
+    }
+
+    itr.close();
+
+    print("--------------------------------------------------------------------------------");
+    print("Chunks processed:", chunksProcessed.format());
+    print("chunks with zero documents:", zeroChunks.format());
+    print("Fit chunks:", fitChunks.format());
+    print("Split chunks:", splitChunks.format());
+    print("Failed sizes:", failedDocNum.format());
+    print("Failed splits:", failedSplits.format());
+    print();
+}
+
 
 sh.print_bounds = function(ns) {
     const coll = sh._configDB.collections.findOne({_id: ns});

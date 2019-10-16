@@ -138,7 +138,7 @@ sh.split_chunk = function(ns, at, in_half=true) {
     };
 
     // Retry an error up to 6 times
-    let retries = 6;
+    let retries = 3;
     let rc = undefined;
 
     while (retries > 0) {
@@ -172,6 +172,15 @@ sh._chunkNumberOfDoc = function(key, chunk, est){
         return -1;
     }
     return result.numObjects;
+}
+
+sh._chunkAveDocSize = function(key, chunk, est){
+    var result = sh.data_size(chunk.ns, key, chunk.min, chunk.max, est);
+    if ( result.ok === 0 ) {
+        printjson(result);
+        return -1;
+    }
+    return result.size / result.numObjects;
 }
 
 sh.merge_chunks = function(ns, lowerBound, upperBound) {
@@ -221,7 +230,8 @@ sh.help = function() {
 	print("\tsh.moves_by_donor()                      Shard moves sorted by donor")
 	print("\tsh.rates_and_volumes()                   Successful migration rates and volumes")
 	print("\tsh.print_sizes()                         Print data sizes")
-	print("\tsh.move_data(ns, from, to, bytes)        Move chunks in ns from -> to (shards) until 'bytes' are moved")
+    print("\tsh.move_data(ns, from, to, bytes)        Move chunks in ns from -> to (shards) until 'bytes' are moved")
+    print("\tsh.split_chunk_EPO()                     Split chunk based on chunk size, number of documents and average document size")
 	print("\tsh.split_to_max(ns)                      Split namespace chunks until they are below the max if possible")
 	print("\tsh.print_bounds(ns)                      Print namespace sharding boundary chunks")
 	print("\tsh.split_topchunk(ns)                    Split the top chunk (maxkey) down the middle")
@@ -655,6 +665,125 @@ sh.move_data = function(ns, srcShard, dstShard, bytesRequested) {
     print("Failed sizes:", failedSizes.format());
     print("Failed moves:", failedMoves.format());
     print("Bytes moved:", sh._dataFormat(bytesMoved));
+    print();
+}
+
+sh.split_chunk_EPO = function(ns, maxSizeMB, docLimit, aveDocSizeLimitMB, startChunk_id) {
+
+    print("--------------------------------------------------------------------------------");
+    print("Split", ns, "chunks until they are below", maxSizeMB, "max chunk size and have less than", docLimit, "number of documents", "and average document size also below", aveDocSizeLimitMB);
+    print("--------------------------------------------------------------------------------");
+
+    const coll = sh._configDB.collections.findOne({_id: ns});
+
+    if (!coll) {
+		print("sh.split_chunk_EPO: namespace", ns, "not found!");
+		return;
+    }
+
+    // Process chunks
+    let chunksProcessed = 0;
+    let failedSplits = 0;
+    let failedSizes = 0;
+    let zeroChunks = 0;
+    let fitChunks = 0;
+    let splitChunks = 0;
+    let maxSize = maxSizeMB*1024*1024;
+    let aveDocSizeLimit = aveDocSizeLimitMB*1024*1024;
+    let query = "";
+    if (startChunk_id != null){
+        query = {"ns": ns, "_id":{$gte:startChunk_id}};
+        print("Starting from chunk_id: ",startChunk_id);
+    }
+    else {
+        query = {"ns": ns};
+    }
+    let itr = sh._configDB.chunks.find(query).sort({_id:1});
+
+     while (itr.hasNext()) {
+
+        while (itr.hasNext()) {
+            chunksProcessed++;
+            const chunk = itr.next();
+
+            var result = sh.data_size(chunk.ns, coll.key, chunk.min, chunk.max, true);
+
+            if ( result.ok === 0 ) {
+                print("Skipping", chunk._id, "due to an invalid dataSize result");
+                printjson(result);
+                continue;
+            }
+
+            var dataSize = result.size;
+            var numOfDoc = result.numObjects;
+            var aveDocSize = dataSize / numOfDoc;
+
+            if ( dataSize < 0 ) {
+                print("Skipping", chunk._id, "due to an invalid data size");
+                failedSizes++;
+                continue;
+            }
+
+            if ( dataSize === 0 ) {
+                //print("Skipping", chunk._id, "due to ZERO size");
+                zeroChunks++;
+                continue;
+            }
+
+            if ( numOfDoc < 0 ) {
+                print("Skipping", chunk._id, "due to an invalid number of documents in chunk.");
+                failedSizes++;
+                continue;
+            }
+
+            if ( numOfDoc === 0 ) {
+                //print("Skipping", chunk._id, "due to ZERO size");
+                zeroChunks++;
+                continue;
+            }
+
+            if ( aveDocSize < 0 ) {
+                print("Skipping", chunk._id, "due to an invalid average data size");
+                failedSizes++;
+                continue;
+            }
+
+            if ( numOfDoc < docLimit && dataSize < maxSize && aveDocSize < aveDocSizeLimit) {
+                //print("Skipping", chunk._id, "due to FIT size");
+                fitChunks++;
+                continue;
+            }
+
+            const splitResult = sh._splitChunk(chunk);
+
+            if (splitResult.ok === 0) {
+                print("Skipping", chunk._id, ":", tojsononeline(splitResult));
+                failedSplits++;
+                continue;
+            }
+
+            splitChunks++;
+            print("Split", chunk._id, "size of data", dataSize ,"number of documents", numOfDoc, "avegare doc size", aveDocSize);
+
+            // We need to restart the query from this point
+            // such that we process both of these chunks again (current
+            // and newly born)
+            itr.close();
+            query = {_id: { $gte: chunk._id}, "ns": ns };
+            itr = sh._configDB.chunks.find(query).sort({_id:1});
+            break;
+        }
+    }
+
+    itr.close();
+
+    print("--------------------------------------------------------------------------------");
+    print("Chunks processed:", chunksProcessed.format());
+    print("chunks with zero documents:", zeroChunks.format());
+    print("Fit chunks didn't need to split:", fitChunks.format());
+    print("Splited chunks:", splitChunks.format());
+    print("Failed sizes:", failedSizes.format());
+    print("Failed splits:", failedSplits.format());
     print();
 }
 

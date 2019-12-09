@@ -137,7 +137,7 @@ sh.split_chunk = function(ns, at, in_half=true) {
         return sh.splitAt(ns, at);
     };
 
-    // Retry an error up to 6 times
+    // Retry an error up to 3 times
     let retries = 3;
     let rc = undefined;
 
@@ -833,7 +833,17 @@ sh.split_to_max = function(ns, startChunk_id) {
                 continue;
             } */
 
-            const dataSize = sh._chunkDataSize(coll.key, chunk);
+            var result = sh.data_size(chunk.ns, coll.key, chunk.min, chunk.max, true);
+
+            if ( result.ok === 0 ) {
+                print("Skipping", chunk._id, "due to an invalid dataSize result");
+                printjson(result);
+                continue;
+            }
+
+            var dataSize = result.size;
+            var numOfDoc = result.numObjects;
+            var aveDocSize = dataSize / numOfDoc;
 
             if ( dataSize < 0 ) {
                 print("Skipping", chunk._id, "due to an invalid data size");
@@ -861,7 +871,7 @@ sh.split_to_max = function(ns, startChunk_id) {
             }
 
             splitChunks++;
-            print("Split", chunk._id, "sized", sh._dataFormat(dataSize));
+            print("Split", chunk._id, "size of data", dataSize ,"number of documents", numOfDoc, "avegare doc size", aveDocSize);
 
             // We need to restart the query from this point
             // such that we process both of these chunks again (current
@@ -924,7 +934,17 @@ sh.split_by_doc = function(ns, docLimit, startChunk_id) {
             const chunk = itr.next();
             //print("Processing:", chunk._id);
 
-            const numOfDoc = sh._chunkNumberOfDoc(coll.key, chunk, true);
+            var result = sh.data_size(chunk.ns, coll.key, chunk.min, chunk.max, true);
+
+            if ( result.ok === 0 ) {
+                print("Skipping", chunk._id, "due to an invalid dataSize result");
+                printjson(result);
+                continue;
+            }
+
+            var dataSize = result.size;
+            var numOfDoc = result.numObjects;
+            var aveDocSize = dataSize / numOfDoc;
 
             if ( numOfDoc < 0 ) {
                 print("Skipping", chunk._id, "due to an invalid number of documents in chunk.");
@@ -952,7 +972,7 @@ sh.split_by_doc = function(ns, docLimit, startChunk_id) {
             }
 
             splitChunks++;
-            print("Split", chunk._id, "number of documents", numOfDoc);
+            print("Split", chunk._id, "size of data", dataSize ,"number of documents", numOfDoc, "avegare doc size", aveDocSize);
 
             // We need to restart the query from this point
             // such that we process both of these chunks again (current
